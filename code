@@ -1,0 +1,150 @@
+#include <stdio.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "mqtt_client.h"
+#include "driver/adc.h"
+#include "driver/gpio.h"
+#include "esp_adc_cal.h"
+#include "math.h"
+
+// ===== Config =====
+#define TAG "PQA"
+#define WIFI_SSID "Wokwi-GUEST"
+#define WIFI_PASS ""
+#define MQTT_BROKER "mqtt://broker.hivemq.com"
+#define MQTT_TOPIC "pqa/data"
+
+// ===== ADC Config (for voltage/current sensing) =====
+#define VOLTAGE_SENSOR ADC1_CHANNEL_6  // GPIO34
+#define CURRENT_SENSOR ADC1_CHANNEL_7  // GPIO35
+#define ADC_WIDTH ADC_WIDTH_BIT_12
+#define ADC_ATTEN ADC_ATTEN_DB_11
+#define NUM_SAMPLES 256
+#define SAMPLING_FREQ 10000  // 10kHz
+
+// ===== FFT & Harmonic Analysis =====
+static float vReal[NUM_SAMPLES];
+static float vImag[NUM_SAMPLES];
+static float currentReal[NUM_SAMPLES];
+static float currentImag[NUM_SAMPLES];
+static float dominantFreq = 0;
+static float thdVoltage = 0;
+static float thdCurrent = 0;
+
+// ===== Wi-Fi & MQTT Handlers =====
+static esp_mqtt_client_handle_t mqtt_client;
+
+// ===== Function Prototypes =====
+void wifi_init_sta(void);
+void mqtt_app_start(void);
+void sample_ac_signals(void);
+void compute_harmonics(void);
+void detect_transients(void);
+
+// ===== Main Task =====
+void app_main(void) {
+    // Initialize NVS (Wi-Fi storage)
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Initialize Wi-Fi
+    wifi_init_sta();
+
+    // Initialize ADC for sensors
+    adc1_config_width(ADC_WIDTH);
+    adc1_config_channel_atten(VOLTAGE_SENSOR, ADC_ATTEN);
+    adc1_config_channel_atten(CURRENT_SENSOR, ADC_ATTEN);
+
+    // Start MQTT
+    mqtt_app_start();
+
+    // Main loop
+    while (1) {
+        sample_ac_signals();
+        compute_harmonics();
+        detect_transients();
+        vTaskDelay(pdMS_TO_TICKS(1000));  // 1s delay
+    }
+}
+
+// ===== Wi-Fi Initialization =====
+void wifi_init_sta(void) {
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+        },
+    };
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "Waiting for Wi-Fi...");
+    esp_wifi_connect();
+}
+
+// ===== MQTT Initialization =====
+void mqtt_app_start(void) {
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = MQTT_BROKER,
+    };
+
+    mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_start(mqtt_client);
+    ESP_LOGI(TAG, "MQTT Started");
+}
+
+// ===== Sample AC Signals (Simulated) =====
+void sample_ac_signals(void) {
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        // Simulate sine wave (replace with real ADC reads)
+        float time = (float)i / SAMPLING_FREQ;
+        vReal[i] = 100 + 100 * sinf(2 * M_PI * 50 * time);  // 50Hz sine wave
+        currentReal[i] = 1 + 1 * sinf(2 * M_PI * 50 * time);
+        vImag[i] = 0;
+        currentImag[i] = 0;
+    }
+}
+
+// ===== Compute FFT & Harmonics (Simplified) =====
+void compute_harmonics(void) {
+    // Simplified FFT (replace with a proper FFT library)
+    dominantFreq = 50.0;  // Assume 50Hz for simulation
+    thdVoltage = 3.5;     // Simulated THD
+    thdCurrent = 4.0;
+
+    ESP_LOGI(TAG, "Freq: %.1f Hz, THD-V: %.1f%%, THD-I: %.1f%%",
+             dominantFreq, thdVoltage, thdCurrent);
+
+    // Publish to MQTT
+    char mqtt_data[100];
+    snprintf(mqtt_data, sizeof(mqtt_data),
+             "{\"freq\":%.1f,\"thd_v\":%.1f,\"thd_i\":%.1f}",
+             dominantFreq, thdVoltage, thdCurrent);
+    esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC, mqtt_data, 0, 0, 0);
+}
+
+// ===== Detect Transients =====
+void detect_transients(void) {
+    // Simulate transient detection
+    static bool transient_detected = false;
+    if (!transient_detected) {
+        transient_detected = true;
+        ESP_LOGW(TAG, "Transient Detected!");
+        esp_mqtt_client_publish(mqtt_client, "pqa/transient", "Warning: Transient!", 0, 0, 0);
+    }
+}
